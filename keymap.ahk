@@ -10,6 +10,15 @@
 class Config {
     static DEBUG := false  ; 调试模式 / Debug mode
 }
+; ============ 公共设置 ============
+; 避免 Alt 触发菜单栏等副作用
+A_MenuMaskKey := "vkE8"
+; 指令部分：
+; #WinActivateForce 是一项全局指令，强制窗口激活函数使用更激进的方法。
+; 这有助于解决在快速连续激活窗口时可能出现的任务栏按钮闪烁问题。
+; 请注意，此指令会影响脚本中所有 WinActivate 函数的行为。
+#WinActivateForce
+
 
 ; ============================================================================
 ; ESC + HJKL 导航模块 / ESC + HJKL Navigation Module
@@ -375,7 +384,48 @@ KeymapApp.Init()
 !Space::Send("#{Space}")   ; Alt+Space 发送 Win+Space
 #Space::Send("!{Space}")   ; Win+Space 发送 Alt+Space
 
-; ============================================================================
-; Win+` 映射到 Alt+` / Map Win+` to Alt+`
-; ============================================================================
-#`::Send("!{``}")          ; Win+` 发送 Alt+`
+; RAlt 单独按：按住期间发送 Win+Ctrl+Shift+Alt
+RAlt:: {
+    Send "{LWin down}{Ctrl down}{Shift down}{Alt down}"
+    KeyWait "RAlt"   ; 等待 RAlt 松开（v2 调用方式）
+    Send "{LWin up}{Ctrl up}{Shift up}{Alt up}"
+}
+
+; 通用函数部分：
+; 将核心逻辑封装在函数中，以便重用。
+; -------------------------------------------------------------------------
+; 函数名: OpenOrFocus
+; 描述:   检查特定应用程序的窗口是否存在，若存在则激活，否则启动。
+; 参数:
+;   - WinIdentifier: 窗口匹配的标准，推荐使用 "ahk_exe" 或 "ahk_class"。
+;   - RunPath:       应用程序的完整可执行文件路径。
+; -------------------------------------------------------------------------
+OpenOrFocus(WinIdentifier, RunPath)
+{
+    ; 检查是否存在符合 WinIdentifier 的窗口。
+    ; WinExist() 返回一个非零的窗口句柄（HWND）如果找到，否则返回0。
+    ; 任何非零值在条件判断中都被视为 true。
+    if WinExist(WinIdentifier)
+    {
+        ; WinExist 成功找到窗口后，AHK 会自动将其设置为“最后找到的窗口”。
+        ; 无参数的 WinActivate 将作用于这个窗口，避免了重复搜索，从而提高效率。
+        ; 如果窗口已最小化，WinActivate 会自动将其恢复。
+        WinActivate
+    }
+    else
+    {
+        ; 如果没有找到匹配的窗口，则执行 Run 命令来启动应用程序。
+        Run RunPath
+    }
+}
+
+; ========== Super 键映射 (RAlt) ==========
+; --- Super 前缀：按住 RAlt 时，以下键生效（AHK v2） ---
+#HotIf GetKeyState("RAlt", "P")
+c:: Run "& 'C:\Program Files\Google\Chrome\Application\chrome.exe'"
+v:: Run "C:\\Users\\wuy6\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code.exe;"      ; Super + v
+e:: Run "msedge"    ; Super + e
+t:: Run "teams"     ; Super + t
+o:: Run "outlook"   ; Super + o
+#HotIf
+
