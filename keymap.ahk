@@ -429,3 +429,258 @@ t:: Run "teams"     ; Super + t
 o:: Run "outlook"   ; Super + o
 #HotIf
 
+; KeepAwake_v2.ahk — AutoHotkey v2
+; 托盘菜单 + 保持屏幕常亮 + 维持 Teams 在线（轻量输入脉冲）
+#Requires AutoHotkey v2.0
+
+; ========= 常量 =========
+ES_DISPLAY_REQUIRED  := 0x00000002
+ES_SYSTEM_REQUIRED   := 0x00000001
+ES_CONTINUOUS        := 0x80000000
+
+DEFAULT_INTERVAL_MS := 30000  ; 默认 30 秒
+RANDOM_JITTER_MS    := 4000   ; 随机抖动 ±4 秒
+
+; ========= 全局状态 =========
+global state := Map(
+  "keepDisplayOn", false,
+  "keepOnline",    false,
+  "intervalMs",    DEFAULT_INTERVAL_MS,
+  "randomize",     true
+)
+
+; “间隔”子菜单选项（键=菜单文本，值=毫秒）
+global intervals := Map(
+  "15 秒", 15000,
+  "30 秒", 30000,
+  "60 秒", 60000
+)
+
+; ========= 托盘菜单 =========
+A_IconTip := "KeepAwake (AHK v2)"
+A_TrayMenu.Delete()  ; 清空默认项
+
+global intervalMenu := Menu()
+for label, ms in intervals {
+  intervalMenu.Add(label, SetIntervalMs.Bind(ms))
+}
+intervalMenu.Add("自定义…", CustomInterval)
+
+A_TrayMenu.Add("保持常亮（显示/系统）", ToggleKeepDisplayOn)
+A_TrayMenu.Add("保持在线（轻量输入脉冲）", ToggleKeepOnline)
+A_TrayMenu.Add() ; 分隔
+A_TrayMenu.Add("间隔", intervalMenu)
+A_TrayMenu.Add("随机化间隔", ToggleRandomize)
+A_TrayMenu.Add() ; 分隔
+A_TrayMenu.Add("开机自启动", ToggleAutoStart)
+A_TrayMenu.Add("暂停 / 恢复", PauseResume)
+A_TrayMenu.Add("立即脉冲一次", PulseOnce)
+A_TrayMenu.Add() ; 分隔
+A_TrayMenu.Add("退出", (*) => ExitApp())
+
+TryTrayIcon()
+UpdateIntervalChecks()
+UpdateTrayChecks()
+SetOnlineTimer()  ; 初始计时器（默认关闭，随开关变化）
+
+; ========= 函数 =========
+ToggleKeepDisplayOn(*) {
+  global state
+  state["keepDisplayOn"] := !state["keepDisplayOn"]
+  ApplyExecutionState(state["keepDisplayOn"])
+  if (state["keepDisplayOn"]) {
+    ShowTrayTip("已开启：保持常亮", "系统与显示将保持唤醒。", 1)
+  } else {
+    ShowTrayTip("已关闭：保持常亮", "恢复系统默认电源策略。", 1)
+  }
+  UpdateTrayChecks()
+  UpdateTrayIcon()
+}
+
+ToggleKeepOnline(*) {
+  global state
+  state["keepOnline"] := !state["keepOnline"]
+  SetOnlineTimer()
+  if (state["keepOnline"]) {
+    ShowTrayTip("已开启：保持在线", "将定期发送轻量输入脉冲。", 1)
+  } else {
+    ShowTrayTip("已关闭：保持在线", "不再发送输入脉冲。", 1)
+  }
+  UpdateTrayChecks()
+  UpdateTrayIcon()
+}
+
+SetIntervalMs(ms, *) {
+  global state
+  state["intervalMs"] := ms
+  UpdateIntervalChecks()
+  SetOnlineTimer()
+  ShowTrayTip("已设置间隔", "当前间隔：" . Round(ms/1000) . " 秒", 1)
+}
+
+CustomInterval(*) {
+  global state
+  input := InputBox("请输入间隔（秒）", "自定义间隔", "w250", Round(state["intervalMs"]/1000))
+  if (input.Result = "Cancel")
+    return
+  secs := Integer(input.Value)
+  if (secs <= 0) {
+    MsgBox("请输入大于 0 的秒数。","提示","Icon!")
+    return
+  }
+  SetIntervalMs(secs * 1000)
+}
+
+ToggleRandomize(*) {
+  global state
+  state["randomize"] := !state["randomize"]
+  UpdateTrayChecks()
+  SetOnlineTimer()
+}
+
+PauseResume(*) {
+  global state
+  if (state["keepOnline"]) {
+    state["keepOnline"] := false
+    SetOnlineTimer()
+    ShowTrayTip("已暂停保持在线", "再次点击可恢复。", 1)
+  } else {
+    state["keepOnline"] := true
+    SetOnlineTimer()
+    ShowTrayTip("已恢复保持在线", "已重新开始发送脉冲。", 1)
+  }
+  UpdateTrayChecks()
+  UpdateTrayIcon()
+}
+
+PulseOnce(*) {
+  DoLightInputPulse()
+  ShowTrayTip("已发送一次输入脉冲","用于立即刷新在线状态。",1)
+}
+
+ToggleAutoStart(*) {
+  lnkPath := A_Startup "\KeepAwake.lnk"
+  if FileExist(lnkPath) {
+    FileDelete(lnkPath)
+    ShowTrayTip("已关闭开机自启动", "启动项已移除。", 1)
+  } else {
+    FileCreateShortcut(A_ScriptFullPath, lnkPath)
+    ShowTrayTip("已开启开机自启动", "已添加到启动文件夹。", 1)
+  }
+  UpdateTrayChecks()
+}
+
+SetOnlineTimer() {
+  global state
+  SetTimer(DoKeepOnlineTick, 0)  ; 先停
+  if (state["keepOnline"]) {
+    SetTimer(DoKeepOnlineTick, NextInterval())
+  }
+}
+
+NextInterval() {
+  global state, RANDOM_JITTER_MS
+  base := state["intervalMs"]
+  if (state["randomize"]) {
+    jitter := Round(Random(-RANDOM_JITTER_MS, RANDOM_JITTER_MS))
+    return Max(1000, base + jitter)
+  }
+  return base
+}
+
+DoKeepOnlineTick() {
+  global state
+  DoLightInputPulse()
+  if (state["keepOnline"]) {
+    SetTimer(DoKeepOnlineTick, NextInterval())
+  } else {
+    SetTimer(DoKeepOnlineTick, 0)
+  }
+}
+
+DoLightInputPulse() {
+  ; 方式 1：发送“无副作用”的 Shift（不改变文本内容）
+  Send("{Shift}")
+  ; 方式 2：极小幅鼠标移动（回到原位，不影响用户）
+  CoordMode("Mouse", "Screen")
+  MouseGetPos &x, &y
+  DllCall("mouse_event", "UInt", 0x0001, "Int", 1, "Int", 0, "UInt", 0, "UPtr", 0) ; MOUSEEVENTF_MOVE
+  MouseMove x, y, 0
+}
+
+ApplyExecutionState(enable) {
+  if (enable) {
+    flags := ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
+    DllCall("Kernel32.dll\SetThreadExecutionState", "UInt", flags, "UInt")
+  } else {
+    ; 仅传 ES_CONTINUOUS 取消保持
+    DllCall("Kernel32.dll\SetThreadExecutionState", "UInt", ES_CONTINUOUS, "UInt")
+  }
+}
+
+UpdateTrayChecks() {
+  global state
+  ; v2: Check/Uncheck 只能 1 个参数，这里按状态分别调用
+  if (state["keepDisplayOn"])
+    A_TrayMenu.Check("保持常亮（显示/系统）")
+  else
+    A_TrayMenu.Uncheck("保持常亮（显示/系统）")
+
+  if (state["keepOnline"])
+    A_TrayMenu.Check("保持在线（轻量输入脉冲）")
+  else
+    A_TrayMenu.Uncheck("保持在线（轻量输入脉冲）")
+
+  if (state["randomize"])
+    A_TrayMenu.Check("随机化间隔")
+  else
+    A_TrayMenu.Uncheck("随机化间隔")
+
+  if (FileExist(A_Startup "\KeepAwake.lnk"))
+    A_TrayMenu.Check("开机自启动")
+  else
+    A_TrayMenu.Uncheck("开机自启动")
+
+  UpdateIntervalChecks()
+}
+
+UpdateIntervalChecks() {
+  global state, intervalMenu, intervals
+  for label, _ in intervals {
+    intervalMenu.Uncheck(label)
+  }
+  for label, ms in intervals {
+    if (ms = state["intervalMs"]) {
+      intervalMenu.Check(label)
+      break
+    }
+  }
+}
+
+TryTrayIcon() {
+  try {
+    TraySetIcon("shell32.dll", 44) ; 活跃风格
+  }
+}
+
+UpdateTrayIcon() {
+  global state
+  if (state["keepDisplayOn"] || state["keepOnline"]) {
+    try {
+      TraySetIcon("shell32.dll", 44)
+    }
+  } else {
+    try {
+      TraySetIcon("shell32.dll", 167)
+    }
+  }
+}
+
+; ========= v2 兼容的托盘气泡封装 =========
+; v2 的 TrayTip 不支持 "Tn" 超时字符串，这里用定时器在 sec 秒后清除。
+ShowTrayTip(title, text, sec := 2) {
+  TrayTip(title, text, "Iconi")  ; 只设置图标，不传超时
+  if (sec > 0) {
+    SetTimer(() => TrayTip(), -sec * 1000)  ; 负数=一次性定时器，触发时清除通知
+  }
+}
